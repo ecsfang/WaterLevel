@@ -1,16 +1,32 @@
 /***************************************************************************
   WaterLevel - detect the water level in a bowl etc
  ***************************************************************************/
+#include <FS.h>
 
 #include <ESP8266WiFi.h>
 #include <ESP8266mDNS.h>
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
 #include <PubSubClient.h>
+#include <ArduinoJson.h>
+
+//needed for library
+#include <ESP8266WebServer.h>
+#include <DNSServer.h>
+#include <WiFiManager.h>
 
 #include "mySSID.h"
 #include "VegetronixVH400.h"
 #include "Pushover.h"
+
+const char* CONFIG_FILE = "/config.json";
+
+/**
+ * Variables
+ */
+ 
+// Indicates whether ESP has WiFi credentials saved from previous session
+bool initialConfig = false;
 
 VegetronixVH400 vh400(A0);
 
@@ -29,7 +45,16 @@ char msg[MSG_LEN];
 
 unsigned long delayTime = 5000;
 
+unsigned int warnLvl = 50;
+unsigned int errLvl  = 10;
+
+/**
+ * Function Prototypes
+ */
+
 void pushMessage(int msg);
+bool readConfigFile();
+bool writeConfigFile();
 
 void setup() {
   Serial.begin(115200);
@@ -45,6 +70,46 @@ void setup() {
     delay(100);
   }
 
+
+  unsigned long startedAt = millis();
+  WiFi.printDiag(Serial); //Remove this line if you do not want to see WiFi password printed
+  Serial.println("Opening configuration portal");
+  digitalWrite(LED_BUILTIN, LOW); // turn the LED on by making the voltage LOW to tell us we are in configuration mode.
+  //Local intialization. Once its business is done, there is no need to keep it around
+  WiFiManager wifiManager;  
+  //sets timeout in seconds until configuration portal gets turned off.
+  //If not specified device will remain in configuration mode until
+  //switched off via webserver.
+  if (WiFi.SSID()!="") wifiManager.setConfigPortalTimeout(60); //If no access point name has been previously entered disable timeout.
+  
+  //it starts an access point 
+  //and goes into a blocking loop awaiting configuration
+  if (!wifiManager.startConfigPortal("ESP8266","password")) {//Delete these two parameters if you do not want a WiFi password on your configuration access point
+     Serial.println("Not connected to WiFi but continuing anyway.");
+  } else {
+     //if you get here you have connected to the WiFi
+     Serial.println("connected...yeey :)");
+  }
+  digitalWrite(LED_BUILTIN, HIGH); // Turn led off as we are not in configuration mode.
+
+  // For some unknown reason webserver can only be started once per boot up 
+  // so webserver can not be used again in the sketch.
+    
+  Serial.print("After waiting ");
+  int connRes = WiFi.waitForConnectResult();
+  float waited = (millis()- startedAt);
+  Serial.print(waited/1000);
+  Serial.print(" secs in setup() connection result is ");
+  Serial.println(connRes);
+  if (WiFi.status()!=WL_CONNECTED){
+    Serial.println("failed to connect, finishing setup anyway");
+  } else{
+    Serial.println("Ready");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+  }
+
+/*
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
   while (WiFi.waitForConnectResult() != WL_CONNECTED) {
@@ -52,6 +117,9 @@ void setup() {
     delay(5000);
     ESP.restart();
   }
+  Serial.println(WiFi.localIP());
+
+************************/
 
   Serial.println();
 
@@ -92,10 +160,6 @@ void setup() {
   });
   ArduinoOTA.begin();
 
-  Serial.println("Ready");
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
-
   client.setServer(mqtt_server, 1883);
 
   pushMessage(START_MSG);
@@ -130,9 +194,6 @@ unsigned long errRepeat = 0;
 unsigned long now;
 bool          bOk = false;
 
-#define LOW_WATER_LEVEL       50
-#define VERY_LOW_WATER_LEVEL  10
-
 #define REPORT_REPEAT_TIME    (5*60*1000)
 #define WARNING_REPEAT_TIME   (180*60*1000)
 #define ERROR_REPEAT_TIME     (60*60*1000)
@@ -162,14 +223,14 @@ void loop()
   Serial.println(ERROR_REPEAT_TIME);
   */
 
-  if( w < VERY_LOW_WATER_LEVEL ) {
+  if( w < errLvl ) {
     if( (now-errMillis) > errRepeat ) {
       pushMessage(ERR_MSG);
       errMillis = now;
       errRepeat = ERROR_REPEAT_TIME;
       bOk = false;
     }
-  } else if( w < LOW_WATER_LEVEL ) {
+  } else if( w < warnLvl ) {
     if( (now-warnMillis) > warnRepeat ) {
       pushMessage(WARN_MSG);
       warnMillis = now;
@@ -255,4 +316,67 @@ void sendMsgI(const char *topic, int v)
   sendMsg(topic, buf);
 }
 
+bool readConfigFile() {
+  // this opens the config file in read-mode
+  File file = SPIFFS.open(CONFIG_FILE, "r");
 
+  if (!file) {
+    Serial.println("Configuration file not found");
+    return false;
+  } else {
+    // Allocate the document on the stack.
+    // Don't forget to change the capacity to match your requirements.
+    // Use arduinojson.org/assistant to compute the capacity.
+    StaticJsonDocument<512> doc;
+  
+    // Deserialize the JSON document
+    DeserializationError error = deserializeJson(doc, file);
+    if (error)
+      Serial.println(F("Failed to read file, using default configuration"));
+  
+    // Get the root object in the document
+    JsonObject root = doc.as<JsonObject>();
+  
+    // Copy values from the JsonObject to the Config
+    warnLvl = root["warnLvl"] | 50;
+    errLvl = root["errLvl"] | 10;
+  
+    // Close the file (File's destructor doesn't close the file)
+    file.close();
+  }
+  Serial.println("\nConfig file was successfully parsed");
+  return true;
+}
+
+// Saves the configuration to a file
+bool writeConfigFile() {
+  Serial.println("Saving config file");
+
+  // Open file for writing
+  File file = SPIFFS.open(CONFIG_FILE, "w");
+  if (!file) {
+    Serial.println("Failed to open config file for writing");
+    return false;
+  }
+
+  // Allocate the document on the stack.
+  // Don't forget to change the capacity to match your requirements.
+  // Use arduinojson.org/assistant to compute the capacity.
+  StaticJsonDocument<256> doc;
+
+  // Make our document contain an object
+  JsonObject root = doc.to<JsonObject>();
+
+  // Set the values in the object
+  root["warnLvl"] = warnLvl;
+  root["errLvl"] = errLvl;
+
+  // Serialize JSON to file
+  if (serializeJson(doc, file) == 0) {
+    Serial.println(F("Failed to write to file"));
+  }
+
+  // Close the file (File's destructor doesn't close the file)
+  file.close();
+  return true;
+}
