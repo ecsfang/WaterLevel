@@ -20,13 +20,14 @@ PubSubClient client(espClient);
 enum {
   START_MSG,
   WARN_MSG,
-  ERR_MSG
+  ERR_MSG,
+  OK_MSG
 };
 
 #define MSG_LEN 50
 char msg[MSG_LEN];
 
-unsigned long delayTime = 1000;
+unsigned long delayTime = 5000;
 
 void pushMessage(int msg);
 
@@ -121,15 +122,20 @@ void reconnect() {
   }
 }
 
+unsigned long reportMillis = 0;
 unsigned long warnMillis = 0;
 unsigned long errMillis = 0;
+unsigned long warnRepeat = 0;
+unsigned long errRepeat = 0;
 unsigned long now;
+bool          bOk = false;
 
 #define LOW_WATER_LEVEL       50
 #define VERY_LOW_WATER_LEVEL  10
 
-#define WARNING_REPEAT_TIME   (60*60*1000)
-#define ERROR_REPEAT_TIME     (10*60*1000)
+#define REPORT_REPEAT_TIME    (5*60*1000)
+#define WARNING_REPEAT_TIME   (180*60*1000)
+#define ERROR_REPEAT_TIME     (60*60*1000)
 
 void loop()
 {
@@ -144,21 +150,43 @@ void loop()
   double w = vh400.getVWC();
 
   Serial.print("Level: ");
-  Serial.print( w );
+  Serial.println( w );
 
   now = millis();
 
-  Serial.print("  -  ");
-  Serial.print(warnMillis);
+/*  Serial.print("  -  ");
+  Serial.print(VERY_LOW_WATER_LEVEL);
   Serial.print(" : ");
-  Serial.println(errMillis);
+  Serial.print((now-errMillis));
+  Serial.print(" - ");
+  Serial.println(ERROR_REPEAT_TIME);
+  */
+
+  if( w < VERY_LOW_WATER_LEVEL ) {
+    if( (now-errMillis) > errRepeat ) {
+      pushMessage(ERR_MSG);
+      errMillis = now;
+      errRepeat = ERROR_REPEAT_TIME;
+      bOk = false;
+    }
+  } else if( w < LOW_WATER_LEVEL ) {
+    if( (now-warnMillis) > warnRepeat ) {
+      pushMessage(WARN_MSG);
+      warnMillis = now;
+      warnRepeat = WARNING_REPEAT_TIME;
+      bOk = false;
+    }
+  } else {
+    //Enough water ...
+    errMillis = warnMillis = 0;
+    if (!bOk )
+      pushMessage(OK_MSG);
+    bOk = true;
+  }
   
-  if( w < VERY_LOW_WATER_LEVEL && (now-errMillis) > ERROR_REPEAT_TIME ) {
-    pushMessage(ERR_MSG);
-    errMillis = now;
-  } else if( w < LOW_WATER_LEVEL && (now-warnMillis) > WARNING_REPEAT_TIME ) {
-    pushMessage(WARN_MSG);
-    warnMillis = now;
+  if( (now-reportMillis) > REPORT_REPEAT_TIME ) {
+    sendMsgF("level", w);
+    reportMillis = now;
   }
   
   delay(delayTime);
@@ -167,11 +195,11 @@ void loop()
 void pushMessage(int msg)
 {
   char buf[64];
-
+/*
   Serial.print("Send pushmessage: ");
   Serial.println(msg);
   return;
-  
+  */
   Pushover po = Pushover(pushAppToken,pushUserToken);
 //  po.setDevice("Xperia_XZ3");
   switch(msg) {
@@ -186,6 +214,9 @@ void pushMessage(int msg)
     case ERR_MSG:
       sprintf(buf, "Warning! Waterlevel is very low!!");
       po.setSound("siren");
+      break;
+    case OK_MSG:
+      sprintf(buf, "Waterlevel is ok!");
       break;
   }
   po.setMessage(buf);
