@@ -9,6 +9,7 @@
 #include <ArduinoOTA.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
+#include <Ticker.h>
 
 //needed for library
 #include <ESP8266WebServer.h>
@@ -18,6 +19,8 @@
 #include "mySSID.h"
 #include "VegetronixVH400.h"
 #include "Pushover.h"
+
+//#define USE_MQTT
 
 const char* CONFIG_FILE = "/config.json";
 
@@ -32,6 +35,8 @@ VegetronixVH400 vh400(A0);
 
 WiFiClient espClient;
 PubSubClient client(espClient);
+
+Ticker flipper;
 
 enum {
   START_MSG,
@@ -48,6 +53,8 @@ unsigned long delayTime = 5000;
 unsigned int warnLvl = 50;
 unsigned int errLvl  = 10;
 
+#define ERROR_LED   D3
+
 /**
  * Function Prototypes
  */
@@ -55,6 +62,19 @@ unsigned int errLvl  = 10;
 void pushMessage(int msg);
 bool readConfigFile();
 bool writeConfigFile();
+void flip(void);
+
+//flag for saving data
+bool shouldSaveConfig = false;
+
+//callback notifying us of the need to save config
+void saveConfigCallback () {
+  Serial.println("Should save config");
+  shouldSaveConfig = true;
+}
+
+char  warn_level[10];
+char  err_level[10];
 
 void setup() {
   Serial.begin(115200);
@@ -62,21 +82,40 @@ void setup() {
   Serial.println(F("WaterLevel!"));
 
   pinMode(LED_BUILTIN, OUTPUT);
+  pinMode(ERROR_LED, OUTPUT);
 
   for(int i=0; i<16; i++) {
-    digitalWrite(LED_BUILTIN, LOW);  // On ...
+    digitalWrite(ERROR_LED, HIGH);  // On ...
     delay(100);
-    digitalWrite(LED_BUILTIN, HIGH);  // Off ...
+    digitalWrite(ERROR_LED, LOW);  // Off ...
     delay(100);
   }
 
+  readConfigFile();
 
+  // The extra parameters to be configured (can be either global or just in the setup)
+  // After connecting, parameter.getValue() will get you the configured value
+  // id/name placeholder/prompt default length
+  WiFiManagerParameter custom_warn_level("Warning", "Warning level", warn_level, 8);
+  WiFiManagerParameter custom_err_level("Error", "Error level", err_level, 8);
+
+  
   unsigned long startedAt = millis();
   WiFi.printDiag(Serial); //Remove this line if you do not want to see WiFi password printed
   Serial.println("Opening configuration portal");
   digitalWrite(LED_BUILTIN, LOW); // turn the LED on by making the voltage LOW to tell us we are in configuration mode.
   //Local intialization. Once its business is done, there is no need to keep it around
-  WiFiManager wifiManager;  
+  WiFiManager wifiManager; 
+
+  //set config save notify callback
+  wifiManager.setSaveConfigCallback(saveConfigCallback);
+
+  //add all your parameters here
+  sprintf(warn_level, "%d", warnLvl);
+  wifiManager.addParameter(&custom_warn_level);
+  sprintf(err_level, "%d", errLvl);
+  wifiManager.addParameter(&custom_err_level);
+
   //sets timeout in seconds until configuration portal gets turned off.
   //If not specified device will remain in configuration mode until
   //switched off via webserver.
@@ -84,7 +123,7 @@ void setup() {
   
   //it starts an access point 
   //and goes into a blocking loop awaiting configuration
-  if (!wifiManager.startConfigPortal("ESP8266","password")) {//Delete these two parameters if you do not want a WiFi password on your configuration access point
+  if (!wifiManager.startConfigPortal("ChristmasTree","christmaslight")) {//Delete these two parameters if you do not want a WiFi password on your configuration access point
      Serial.println("Not connected to WiFi but continuing anyway.");
   } else {
      //if you get here you have connected to the WiFi
@@ -120,47 +159,54 @@ void setup() {
   Serial.println(WiFi.localIP());
 
 ************************/
-
+  if( shouldSaveConfig )
+    writeConfigFile();
+  
   Serial.println();
 
-  ArduinoOTA.setHostname("WaterLevel");
-  ArduinoOTA.setPassword(flashpw);
+  if( WiFi.status() == WL_CONNECTED ) {
 
-  ArduinoOTA.onStart([]() {
-    String type;
-    if (ArduinoOTA.getCommand() == U_FLASH) {
-      type = "sketch";
-    } else { // U_SPIFFS
-      type = "filesystem";
-    }
-    // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
-    Serial.println("Start updating " + type);
-  });
-  ArduinoOTA.onEnd([]() {
-    Serial.println("\nEnd");
-  });
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
-  });
-  ArduinoOTA.onError([](ota_error_t error) {
-    Serial.printf("Error[%u]: ", error);
-    if (error == OTA_AUTH_ERROR) {
-      Serial.println("Auth Failed");
-    } else if (error == OTA_BEGIN_ERROR) {
-      Serial.println("Begin Failed");
-    } else if (error == OTA_CONNECT_ERROR) {
-      Serial.println("Connect Failed");
-    } else if (error == OTA_RECEIVE_ERROR) {
-      Serial.println("Receive Failed");
-    } else if (error == OTA_END_ERROR) {
-      Serial.println("End Failed");
-    } else {
-      Serial.println("Unknown error!");
-    }
-  });
-  ArduinoOTA.begin();
-
+    ArduinoOTA.setHostname("WaterLevel");
+    ArduinoOTA.setPassword(flashpw);
+  
+    ArduinoOTA.onStart([]() {
+      String type;
+      if (ArduinoOTA.getCommand() == U_FLASH) {
+        type = "sketch";
+      } else { // U_SPIFFS
+        type = "filesystem";
+      }
+      // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
+      Serial.println("Start updating " + type);
+    });
+    ArduinoOTA.onEnd([]() {
+      Serial.println("\nEnd");
+    });
+    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+      Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+    });
+    ArduinoOTA.onError([](ota_error_t error) {
+      Serial.printf("Error[%u]: ", error);
+      if (error == OTA_AUTH_ERROR) {
+        Serial.println("Auth Failed");
+      } else if (error == OTA_BEGIN_ERROR) {
+        Serial.println("Begin Failed");
+      } else if (error == OTA_CONNECT_ERROR) {
+        Serial.println("Connect Failed");
+      } else if (error == OTA_RECEIVE_ERROR) {
+        Serial.println("Receive Failed");
+      } else if (error == OTA_END_ERROR) {
+        Serial.println("End Failed");
+      } else {
+        Serial.println("Unknown error!");
+      }
+    });
+    ArduinoOTA.begin();
+  }
+  
+#ifdef USE_MQTT
   client.setServer(mqtt_server, 1883);
+#endif
 
   pushMessage(START_MSG);
 }
@@ -198,55 +244,70 @@ bool          bOk = false;
 #define WARNING_REPEAT_TIME   (180*60*1000)
 #define ERROR_REPEAT_TIME     (60*60*1000)
 
+double level = 0;
+
 void loop()
 {
+#ifdef USE_MQTT
   if (!client.connected())
     reconnect();
+#endif
 
-  if (client.connected())
+  if (client.connected()) {
     client.loop();
-
-  ArduinoOTA.handle();
-
-  double w = vh400.getVWC();
+    ArduinoOTA.handle();
+  }
+  
+  level = vh400.getVWC();
 
   Serial.print("Level: ");
-  Serial.println( w );
+  Serial.println( level );
 
   now = millis();
 
-/*  Serial.print("  -  ");
-  Serial.print(VERY_LOW_WATER_LEVEL);
+  Serial.print("  Error @ ");
+  Serial.print(errLvl);
   Serial.print(" : ");
   Serial.print((now-errMillis));
   Serial.print(" - ");
-  Serial.println(ERROR_REPEAT_TIME);
-  */
+  Serial.println(errRepeat);
+  Serial.print("  Warning @ ");
+  Serial.print(warnLvl);
+  Serial.print(" : ");
+  Serial.print((now-warnMillis));
+  Serial.print(" - ");
+  Serial.println(warnRepeat);
 
-  if( w < errLvl ) {
+  if( level < errLvl ) {
     if( (now-errMillis) > errRepeat ) {
       pushMessage(ERR_MSG);
       errMillis = now;
       errRepeat = ERROR_REPEAT_TIME;
+      warnRepeat = 5000;
       bOk = false;
+      flip();
     }
-  } else if( w < warnLvl ) {
+  } else if( level < warnLvl ) {
     if( (now-warnMillis) > warnRepeat ) {
       pushMessage(WARN_MSG);
       warnMillis = now;
       warnRepeat = WARNING_REPEAT_TIME;
+      errRepeat = 5000;
       bOk = false;
+      flip();
     }
   } else {
     //Enough water ...
-    errMillis = warnMillis = 0;
+    warnRepeat = errRepeat = 5000;
     if (!bOk )
       pushMessage(OK_MSG);
     bOk = true;
+    flipper.detach();
+    digitalWrite(ERROR_LED, LOW);  // Off ...
   }
   
   if( (now-reportMillis) > REPORT_REPEAT_TIME ) {
-    sendMsgF("level", w);
+    sendMsgF("level", level);
     reportMillis = now;
   }
   
@@ -256,11 +317,7 @@ void loop()
 void pushMessage(int msg)
 {
   char buf[64];
-/*
-  Serial.print("Send pushmessage: ");
-  Serial.println(msg);
-  return;
-  */
+
   Pushover po = Pushover(pushAppToken,pushUserToken);
 //  po.setDevice("Xperia_XZ3");
   switch(msg) {
@@ -281,6 +338,11 @@ void pushMessage(int msg)
       break;
   }
   po.setMessage(buf);
+
+  Serial.print("Send pushmessage: ");
+  Serial.println(buf);
+  return; // ################################
+  
   Serial.println(po.send()); //should return 1 on success
 }
 
@@ -300,7 +362,9 @@ void sendMsg(const char *topic, const char *m)
   Serial.print(msg);
   Serial.print(" ");
   Serial.println(m);
+#ifdef USE_MQTT
   client.publish(msg, m);
+#endif
 }
 
 void sendMsgF(const char *topic, double v)
@@ -338,9 +402,22 @@ bool readConfigFile() {
     JsonObject root = doc.as<JsonObject>();
   
     // Copy values from the JsonObject to the Config
-    warnLvl = root["warnLvl"] | 50;
-    errLvl = root["errLvl"] | 10;
-  
+    strcpy(warn_level, root["warnLvl"] | "50");
+    strcpy(err_level,  root["errLvl"]  | "10");
+
+    Serial.print("warnLvl: ");
+    Serial.println(warn_level);
+    Serial.print("errLvl: ");
+    Serial.println(err_level);
+
+    warnLvl = atoi(warn_level);
+    errLvl = atoi(err_level);
+
+    Serial.print("warnLvl: ");
+    Serial.println(warnLvl);
+    Serial.print("errLvl: ");
+    Serial.println(errLvl);
+    
     // Close the file (File's destructor doesn't close the file)
     file.close();
   }
@@ -368,8 +445,16 @@ bool writeConfigFile() {
   JsonObject root = doc.to<JsonObject>();
 
   // Set the values in the object
-  root["warnLvl"] = warnLvl;
-  root["errLvl"] = errLvl;
+  root["warnLvl"] = warn_level;
+  root["errLvl"] = err_level;
+
+  warnLvl = atoi(warn_level);
+  errLvl = atoi(err_level);
+
+  Serial.print("warnLvl: ");
+  Serial.println(warnLvl);
+  Serial.print("errLvl: ");
+  Serial.println(errLvl);
 
   // Serialize JSON to file
   if (serializeJson(doc, file) == 0) {
@@ -379,4 +464,18 @@ bool writeConfigFile() {
   // Close the file (File's destructor doesn't close the file)
   file.close();
   return true;
+}
+
+void flip() {
+  int state = digitalRead(ERROR_LED);  // get the current state of GPIO1 pin
+  digitalWrite(ERROR_LED, !state);     // set pin to the opposite state
+
+  // when the counter reaches a certain value, start blinking like crazy
+  if (errLvl >= level) {
+    flipper.attach(0.1, flip);
+  } else if (warnLvl >= level) {
+    flipper.attach(1.0, flip);
+  } else {
+    flipper.detach();
+  }
 }
