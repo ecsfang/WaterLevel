@@ -11,25 +11,31 @@
 #include <ArduinoJson.h>
 #include <Ticker.h>
 
+#ifdef USE_WEB_SERVER
 //needed for library
 #include <ESP8266WebServer.h>
 #include <DNSServer.h>
 #include <WiFiManager.h>
+#endif
 
 #include "mySSID.h"
 #include "VegetronixVH400.h"
 #include "Pushover.h"
 
-//#define USE_MQTT
+#define USE_MQTT
 
+#ifdef USE_WEB_SERVER
 const char* CONFIG_FILE = "/config.json";
+#endif
 
 /**
  * Variables
  */
  
+#ifdef USE_WEB_SERVER
 // Indicates whether ESP has WiFi credentials saved from previous session
 bool initialConfig = false;
+#endif
 
 VegetronixVH400 vh400(A0);
 
@@ -60,10 +66,11 @@ unsigned int errLvl  = 10;
  */
 
 void pushMessage(int msg);
-bool readConfigFile();
-bool writeConfigFile();
 void flip(void);
 
+#ifdef USE_WEB_SERVER
+bool readConfigFile();
+bool writeConfigFile();
 //flag for saving data
 bool shouldSaveConfig = false;
 
@@ -72,9 +79,10 @@ void saveConfigCallback () {
   Serial.println("Should save config");
   shouldSaveConfig = true;
 }
-
 char  warn_level[10];
 char  err_level[10];
+#endif
+
 
 void setup() {
   Serial.begin(115200);
@@ -91,6 +99,7 @@ void setup() {
     delay(100);
   }
 
+#ifdef USE_WEB_SERVER
   readConfigFile();
 
   // The extra parameters to be configured (can be either global or just in the setup)
@@ -99,6 +108,7 @@ void setup() {
   WiFiManagerParameter custom_warn_level("Warning", "Warning level", warn_level, 8);
   WiFiManagerParameter custom_err_level("Error", "Error level", err_level, 8);
 
+  flipper.attach(2.0, flip);
   
   unsigned long startedAt = millis();
   WiFi.printDiag(Serial); //Remove this line if you do not want to see WiFi password printed
@@ -129,6 +139,8 @@ void setup() {
      //if you get here you have connected to the WiFi
      Serial.println("connected...yeey :)");
   }
+
+  flipper.detach();
   digitalWrite(LED_BUILTIN, HIGH); // Turn led off as we are not in configuration mode.
 
   // For some unknown reason webserver can only be started once per boot up 
@@ -147,8 +159,11 @@ void setup() {
     Serial.print("IP address: ");
     Serial.println(WiFi.localIP());
   }
+  if( shouldSaveConfig )
+    writeConfigFile();
 
-/*
+#else
+
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
   while (WiFi.waitForConnectResult() != WL_CONNECTED) {
@@ -157,11 +172,8 @@ void setup() {
     ESP.restart();
   }
   Serial.println(WiFi.localIP());
+#endif
 
-************************/
-  if( shouldSaveConfig )
-    writeConfigFile();
-  
   Serial.println();
 
   if( WiFi.status() == WL_CONNECTED ) {
@@ -341,7 +353,8 @@ void pushMessage(int msg)
 
   Serial.print("Send pushmessage: ");
   Serial.println(buf);
-  return; // ################################
+
+//  return; // ################################
   
   Serial.println(po.send()); //should return 1 on success
 }
@@ -380,6 +393,7 @@ void sendMsgI(const char *topic, int v)
   sendMsg(topic, buf);
 }
 
+#ifdef USE_WEB_SERVER
 bool readConfigFile() {
   // this opens the config file in read-mode
   File file = SPIFFS.open(CONFIG_FILE, "r");
@@ -465,6 +479,7 @@ bool writeConfigFile() {
   file.close();
   return true;
 }
+#endif
 
 void flip() {
   int state = digitalRead(ERROR_LED);  // get the current state of GPIO1 pin
