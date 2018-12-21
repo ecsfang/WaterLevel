@@ -22,7 +22,7 @@
 #include "VegetronixVH400.h"
 #include "Pushover.h"
 
-#define USE_MQTT
+//#define USE_MQTT
 
 #ifdef USE_WEB_SERVER
 const char* CONFIG_FILE = "/config.json";
@@ -43,6 +43,7 @@ WiFiClient espClient;
 PubSubClient client(espClient);
 
 Ticker flipper;
+Ticker pulse;
 
 enum {
   START_MSG,
@@ -59,6 +60,7 @@ unsigned long delayTime = 5000;
 unsigned int warnLvl = 50;
 unsigned int errLvl  = 10;
 
+#define OK_LED      D4
 #define ERROR_LED   D3
 
 /**
@@ -86,18 +88,23 @@ char  err_level[10];
 
 void setup() {
   Serial.begin(115200);
-  delay(1000);
-  Serial.println(F("WaterLevel!"));
 
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(ERROR_LED, OUTPUT);
 
   for(int i=0; i<16; i++) {
+    digitalWrite(OK_LED, HIGH);     // On ...
+    digitalWrite(ERROR_LED, LOW);   // Off ...
+    delay(100);
+    digitalWrite(OK_LED, LOW);      // Off ...
     digitalWrite(ERROR_LED, HIGH);  // On ...
     delay(100);
-    digitalWrite(ERROR_LED, LOW);  // Off ...
-    delay(100);
   }
+
+  digitalWrite(OK_LED, LOW);      // Off ...
+  digitalWrite(ERROR_LED, LOW);   // Off ...
+
+  Serial.println(F("WaterLevel!"));
 
 #ifdef USE_WEB_SERVER
   readConfigFile();
@@ -166,12 +173,14 @@ void setup() {
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
-  while (WiFi.waitForConnectResult() != WL_CONNECTED) {
+  if (WiFi.waitForConnectResult() != WL_CONNECTED) {
+//  while (WiFi.waitForConnectResult() != WL_CONNECTED) {
     Serial.println("Connection Failed! Rebooting...");
-    delay(5000);
-    ESP.restart();
-  }
-  Serial.println(WiFi.localIP());
+//    delay(5000);
+//    ESP.restart();
+  } else
+    Serial.println(WiFi.localIP());
+
 #endif
 
   Serial.println();
@@ -220,6 +229,8 @@ void setup() {
   client.setServer(mqtt_server, 1883);
 #endif
 
+  pulse.attach(5.0, puls);
+
   pushMessage(START_MSG);
 }
 
@@ -252,9 +263,12 @@ unsigned long errRepeat = 0;
 unsigned long now;
 bool          bOk = false;
 
-#define REPORT_REPEAT_TIME    (5*60*1000)
-#define WARNING_REPEAT_TIME   (180*60*1000)
-#define ERROR_REPEAT_TIME     (60*60*1000)
+#define SECONDS               1000
+#define MINUTES               (60*SECONDS)
+#define HOURS                 (60*MINUTES)
+#define REPORT_REPEAT_TIME    (5*MINUTES)
+#define WARNING_REPEAT_TIME   (3*HOURS)
+#define ERROR_REPEAT_TIME     (1*HOURS)
 
 double level = 0;
 
@@ -356,20 +370,25 @@ void pushMessage(int msg)
 
 //  return; // ################################
   
-  Serial.println(po.send()); //should return 1 on success
+  if (client.connected()) {
+    Serial.println(po.send()); //should return 1 on success
+  }
 }
 
 void pushWarning(void)
 {
-  Pushover po = Pushover(pushAppToken,pushUserToken);
-  po.setDevice("Xperia_XZ3");
-  po.setMessage("Low on water!");
-  po.setSound("siren");
-  Serial.println(po.send()); //should return 1 on success
+  if (client.connected()) {
+    Pushover po = Pushover(pushAppToken,pushUserToken);
+    po.setDevice("Xperia_XZ3");
+    po.setMessage("Low on water!");
+    po.setSound("siren");
+    Serial.println(po.send()); //should return 1 on success
+  }
 }
 
 void sendMsg(const char *topic, const char *m)
 {
+  digitalWrite(OK_LED, HIGH);     // On ...
   Serial.print("Publish message: ");
   snprintf (msg, MSG_LEN, "waterlevel/%s", topic);
   Serial.print(msg);
@@ -378,6 +397,7 @@ void sendMsg(const char *topic, const char *m)
 #ifdef USE_MQTT
   client.publish(msg, m);
 #endif
+  digitalWrite(OK_LED, LOW);     // Off ...
 }
 
 void sendMsgF(const char *topic, double v)
@@ -480,6 +500,17 @@ bool writeConfigFile() {
   return true;
 }
 #endif
+
+void puls() {
+  int state = digitalRead(OK_LED);  // get the current state of GPIO1 pin
+  digitalWrite(OK_LED, !state);     // set pin to the opposite state
+
+  if (state) {
+    pulse.attach(5.0, puls);
+  } else {
+    pulse.attach(0.1, puls);
+  }
+}
 
 void flip() {
   int state = digitalRead(ERROR_LED);  // get the current state of GPIO1 pin
